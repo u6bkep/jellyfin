@@ -124,10 +124,21 @@ namespace MediaBrowser.Providers.MediaInfo
                 {
                     // Use bluray: protocol via ffprobe — libbluray handles playlist
                     // selection and stream demuxing natively
-                    mediaInfoResult = await GetMediaInfo(item, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        mediaInfoResult = await GetMediaInfo(item, cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        // A broken/empty BDMV structure must not fail the whole metadata refresh
+                        _logger.LogWarning(ex, "FFprobe failed on Blu-ray structure {Path}, skipping FFprobe.", item.Path);
+                        return ItemUpdateType.MetadataImport;
+                    }
 
-                    // BDInfo is still needed for chapter marks, which libbluray
-                    // does not expose through ffprobe.
+                    // BDInfo is still needed for chapter marks, which libbluray does
+                    // not expose through ffprobe, and for the playlist's full stream
+                    // table, since ffprobe only reports streams seen within its
+                    // probe window.
                     var (discRoot, _) = EncodingHelper.ParseBlurayPath(item.Path);
                     var playlistName = item.Path.EndsWith(".mpls", StringComparison.OrdinalIgnoreCase)
                         ? Path.GetFileName(item.Path)
@@ -208,7 +219,7 @@ namespace MediaBrowser.Providers.MediaInfo
                 chapters = mediaInfo.Chapters ?? [];
                 if (blurayInfo is not null)
                 {
-                    FetchBdInfo(video, ref chapters, mediaStreams, blurayInfo);
+                    FetchBdInfo(ref chapters, mediaStreams, blurayInfo);
                 }
             }
             else
@@ -309,11 +320,16 @@ namespace MediaBrowser.Providers.MediaInfo
         }
 
         /// <summary>
-        /// Extracts chapter information from BDInfo. Stream metadata and runtime
-        /// are handled by ffprobe via the bluray: protocol, so only chapters
-        /// (which libbluray does not expose through ffprobe) are taken from BDInfo.
+        /// Merges BDInfo data into the ffprobe results. ffprobe (via the bluray:
+        /// protocol) is authoritative for stream properties and runtime, but on an
+        /// mpegts input it only reports streams that appear within its probe
+        /// window, so streams that first appear late in the title (typically PGS
+        /// subtitles) can be missing entirely. BDInfo reads the playlist's stream
+        /// table directly, so streams it reports beyond ffprobe's per-type counts
+        /// are appended. Chapters always come from BDInfo, since libbluray does
+        /// not expose them through ffprobe.
         /// </summary>
-        private void FetchBdInfo(Video video, ref ChapterInfo[] chapters, List<MediaStream> mediaStreams, BlurayDiscInfo blurayInfo)
+        private void FetchBdInfo(ref ChapterInfo[] chapters, List<MediaStream> mediaStreams, BlurayDiscInfo blurayInfo)
         {
             if (blurayInfo.Chapters is not null && blurayInfo.Chapters.Length > 0)
             {
@@ -327,6 +343,114 @@ namespace MediaBrowser.Providers.MediaInfo
                     };
                 }
             }
+
+            AppendMissingBdStreams(mediaStreams, blurayInfo, MediaStreamType.Audio);
+            AppendMissingBdStreams(mediaStreams, blurayInfo, MediaStreamType.Subtitle);
+        }
+
+        /// <summary>
+        /// Appends streams of the given type that BDInfo reports for the playlist
+        /// but ffprobe did not see. Never reorders or renumbers the ffprobe-derived
+        /// streams: their Index values are what -map later uses.
+        /// </summary>
+        private void AppendMissingBdStreams(List<MediaStream> mediaStreams, BlurayDiscInfo blurayInfo, MediaStreamType type)
+        {
+            var probedStreams = mediaStreams.Where(s => !s.IsExternal && s.Type == type).ToList();
+            var bdStreams = blurayInfo.MediaStreams.Where(s => s.Type == type).ToList();
+
+            var missingCount = bdStreams.Count - probedStreams.Count;
+            if (missingCount <= 0)
+            {
+                return;
+            }
+
+            // Greedy one-to-one matching on language + codec to find which BDInfo
+            // streams ffprobe already reported.
+            var unmatched = new List<MediaStream>();
+            foreach (var bdStream in bdStreams)
+            {
+                var match = probedStreams.FirstOrDefault(s => BdLanguagesMatch(bdStream.Language, s.Language) && BdCodecsMatch(bdStream.Codec, s.Codec));
+                if (match is not null)
+                {
+                    probedStreams.Remove(match);
+                }
+                else
+                {
+                    unmatched.Add(bdStream);
+                }
+            }
+
+            // Only append when the unmatched set exactly accounts for the count
+            // difference; anything else means the metadata is ambiguous and
+            // appending could duplicate a stream ffprobe already reported.
+            if (unmatched.Count != missingCount)
+            {
+                _logger.LogDebug(
+                    "BDInfo reports {BdCount} {Type} streams for playlist {Playlist} but ffprobe saw {ProbedCount}; stream metadata is ambiguous, not appending",
+                    bdStreams.Count,
+                    type,
+                    blurayInfo.PlaylistName,
+                    bdStreams.Count - missingCount);
+                return;
+            }
+
+            var nextIndex = mediaStreams.Count == 0 ? 0 : mediaStreams.Max(s => s.Index) + 1;
+            foreach (var stream in unmatched)
+            {
+                _logger.LogInformation(
+                    "Adding {Type} stream ({Codec}, {Language}) reported by BDInfo for playlist {Playlist} but not seen by ffprobe",
+                    type,
+                    stream.Codec,
+                    stream.Language,
+                    blurayInfo.PlaylistName);
+
+                // These indexes continue past what ffprobe reported, so ffmpeg may
+                // not be able to -map them until it has read far enough into the
+                // title for the stream to appear.
+                stream.Index = nextIndex++;
+                mediaStreams.Add(stream);
+            }
+        }
+
+        /// <summary>
+        /// Compares a BDInfo language code against an ffprobe one. Missing tags on
+        /// either side count as a match, so a stream ffprobe reported without a
+        /// language tag is not appended a second time.
+        /// </summary>
+        private static bool BdLanguagesMatch(string? bdLanguage, string? probedLanguage)
+        {
+            if (string.IsNullOrEmpty(bdLanguage)
+                || string.IsNullOrEmpty(probedLanguage)
+                || string.Equals(bdLanguage, "und", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(probedLanguage, "und", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            return string.Equals(bdLanguage, probedLanguage, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Compares a BDInfo codec name against an ffprobe one. BDInfo and ffprobe
+        /// use different names for some codecs; unknown/missing codecs count as a
+        /// match so ambiguous streams are never appended twice.
+        /// </summary>
+        private static bool BdCodecsMatch(string? bdCodec, string? probedCodec)
+        {
+            if (string.IsNullOrEmpty(bdCodec) || string.IsNullOrEmpty(probedCodec))
+            {
+                return true;
+            }
+
+            static string Normalize(string codec) => codec.ToLowerInvariant() switch
+            {
+                "avc" => "h264",
+                "lpcm" => "pcm_bluray",
+                "hdmv_pgs_subtitle" => "pgssub",
+                var c => c
+            };
+
+            return string.Equals(Normalize(bdCodec), Normalize(probedCodec), StringComparison.Ordinal);
         }
 
         /// <summary>

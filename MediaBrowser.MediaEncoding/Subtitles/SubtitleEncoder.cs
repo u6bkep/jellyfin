@@ -817,11 +817,21 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                 {
                     var subtitleStreamIndex = EncodingHelper.FindIndex(mediaSource.MediaStreams, subtitleStream);
 
-                    var args = _mediaEncoder.GetInputArgument(mediaSource.Path, mediaSource);
+                    var extraInputArgs = string.Empty;
+                    if (mediaSource.VideoType == VideoType.BluRay)
+                    {
+                        var (_, playlistNumber) = EncodingHelper.ParseBlurayPath(mediaSource.Path);
+                        if (playlistNumber.HasValue)
+                        {
+                            extraInputArgs = "-playlist " + playlistNumber.Value + " ";
+                        }
+                    }
+
+                    var args = extraInputArgs + "-i " + _mediaEncoder.GetInputArgument(mediaSource.Path, mediaSource);
 
                     if (subtitleStream.IsExternal)
                     {
-                        args = _mediaEncoder.GetExternalSubtitleInputArgument(subtitleStream.Path);
+                        args = "-i " + _mediaEncoder.GetExternalSubtitleInputArgument(subtitleStream.Path);
                     }
 
                     await ExtractTextSubtitleInternal(
@@ -835,27 +845,27 @@ namespace MediaBrowser.MediaEncoding.Subtitles
         }
 
         private async Task ExtractTextSubtitleInternal(
-            string inputPath,
+            string inputArgs,
             int subtitleStreamIndex,
             string outputCodec,
             string outputPath,
             CancellationToken cancellationToken)
         {
-            ArgumentException.ThrowIfNullOrEmpty(inputPath);
+            ArgumentException.ThrowIfNullOrEmpty(inputArgs);
 
             ArgumentException.ThrowIfNullOrEmpty(outputPath);
 
             Directory.CreateDirectory(Path.GetDirectoryName(outputPath) ?? throw new ArgumentException($"Provided path ({outputPath}) is not valid.", nameof(outputPath)));
             var processArgs = string.Format(
                 CultureInfo.InvariantCulture,
-                "-y -i {0} -copyts -map 0:{1} -an -vn -c:s {2} \"{3}\"",
-                inputPath,
+                "-y {0} -copyts -map 0:{1} -an -vn -c:s {2} \"{3}\"",
+                inputArgs,
                 subtitleStreamIndex,
                 outputCodec,
                 outputPath);
 
             await ExtractSubtitlesForFile(
-                inputPath,
+                inputArgs,
                 processArgs,
                 [outputPath],
                 cancellationToken).ConfigureAwait(false);

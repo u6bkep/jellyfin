@@ -254,13 +254,6 @@ namespace MediaBrowser.Controller.MediaEncoding
         IReadOnlyList<string> GetPrimaryPlaylistVobFiles(string path, uint? titleNumber);
 
         /// <summary>
-        /// Gets the primary playlist of .m2ts files.
-        /// </summary>
-        /// <param name="path">The to the .m2ts files.</param>
-        /// <returns>A playlist.</returns>
-        IReadOnlyList<string> GetPrimaryPlaylistM2tsFiles(string path);
-
-        /// <summary>
         /// Gets the input path argument from <see cref="EncodingJobInfo"/>.
         /// </summary>
         /// <param name="state">The <see cref="EncodingJobInfo"/>.</param>

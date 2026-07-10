@@ -514,9 +514,8 @@ namespace MediaBrowser.MediaEncoding.Encoder
                 return true;
             }
 
-            if (path.EndsWith("BDMV", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("BDMV/", StringComparison.OrdinalIgnoreCase)
-                || path.EndsWith("BDMV\\", StringComparison.OrdinalIgnoreCase))
+            var trimmedPath = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (string.Equals(Path.GetFileName(trimmedPath), "BDMV", StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
@@ -1345,10 +1344,6 @@ namespace MediaBrowser.MediaEncoding.Encoder
         }
 
         /// <inheritdoc />
-        public IReadOnlyList<string> GetPrimaryPlaylistM2tsFiles(string path)
-            => _blurayExaminer.GetDiscInfo(path).Files;
-
-        /// <inheritdoc />
         public string GetInputPathArgument(EncodingJobInfo state)
             => GetInputPathArgument(state.MediaPath, state.MediaSource);
 
@@ -1372,10 +1367,6 @@ namespace MediaBrowser.MediaEncoding.Encoder
             if (videoType == VideoType.Dvd)
             {
                 files = GetPrimaryPlaylistVobFiles(source.Path, null);
-            }
-            else if (videoType == VideoType.BluRay)
-            {
-                files = GetPrimaryPlaylistM2tsFiles(source.Path);
             }
             else
             {

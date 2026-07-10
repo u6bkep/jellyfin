@@ -1273,9 +1273,9 @@ namespace MediaBrowser.Controller.MediaEncoding
                         .Append(playlistNumber.Value);
                 }
 
-                arg.Append(" -i bluray:\"")
-                    .Append(discRoot.Replace("\"", "\\\"", StringComparison.Ordinal))
-                    .Append("\" ");
+                arg.Append(" -i ")
+                    .Append(_mediaEncoder.GetInputArgument(discRoot, state.MediaSource))
+                    .Append(' ');
             }
             else if (state.MediaSource.VideoType == VideoType.Dvd)
             {
@@ -1453,7 +1453,7 @@ namespace MediaBrowser.Controller.MediaEncoding
             }
 
             var trimmedPath = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-            if (trimmedPath.EndsWith("BDMV", StringComparison.OrdinalIgnoreCase))
+            if (string.Equals(Path.GetFileName(trimmedPath), "BDMV", StringComparison.OrdinalIgnoreCase))
             {
                 var discRoot = Path.GetDirectoryName(trimmedPath);
                 if (discRoot is not null)
